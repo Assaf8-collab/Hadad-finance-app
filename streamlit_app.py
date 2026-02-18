@@ -1,3 +1,17 @@
+import json
+import os
+
+SETTINGS_FILE = 'app_settings.json'
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {"approved_sources": []}
+
+def save_settings(settings_dict):
+    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(settings_dict, f, ensure_ascii=False, indent=4)
 import streamlit as st
 import pandas as pd
 
@@ -83,18 +97,40 @@ if bank_up and credit_up:
     # הוספת עמודת בחירה (Checkmark)
     income_options.insert(0, "נכלל בתזרים", True)
 
-    # הצגת טבלה אינטראקטיבית שנוחה לקריאה בנייד
+   # טעינת הגדרות קודמות
+    saved_config = load_settings()
+    previously_approved = saved_config.get("approved_sources", [])
+
+    st.subheader("🏦 הגדרת מקורות הכנסה")
+    
+    # הכנת הנתונים לטבלה
+    income_options = df_inc_raw.groupby('תיאור התנועה').agg({'סכום': ['sum', 'count']}).reset_index()
+    income_options.columns = ['תיאור התנועה', 'סך הכל', 'פעמים']
+    
+    # סימון אוטומטי של מה שנשמר בעבר
+    income_options.insert(0, "נכלל", income_options['תיאור התנועה'].isin(previously_approved))
+
+    # הצגת הטבלה (בלי חיתוך טקסט)
     edited_income = st.data_editor(
         income_options,
         column_config={
-            "נכלל בתזרים": st.column_config.CheckboxColumn("אישור", default=True),
-            "תיאור התנועה": st.column_config.TextColumn("תיאור מקור ההכנסה", width="large"),
-            "סך הכל שהתקבל": st.column_config.NumberColumn("סכום מצטבר", format="₪%.0f"),
-            "ממוצע חודשי": st.column_config.NumberColumn("ממוצע", format="₪%.0f"),
+            "נכלל": st.column_config.CheckboxColumn("אישור", default=True),
+            "תיאור התנועה": st.column_config.TextColumn("מקור הכנסה", width="large"),
+            "סך הכל": st.column_config.NumberColumn("סכום מצטבר", format="₪%.0f"),
         },
-        disabled=['תיאור התנועה', 'סך הכל שהתקבל', 'ממוצע חודשי', 'מספר פעמים'],
+        disabled=['תיאור התנועה', 'סך הכל', 'פעמים'],
         hide_index=True,
     )
+
+    # כפתור שמירה קבוע
+    if st.button("💾 שמור הגדרות אלו לחודש הבא"):
+        approved_list = edited_income[edited_income["נכלל"] == True]['תיאור התנועה'].tolist()
+        save_settings({"approved_sources": approved_list})
+        st.success("ההגדרות נשמרו בהצלחה!")
+        
+    # סינון הנתונים להמשך החישוב
+    final_approved = edited_income[edited_income["נכלל"] == True]['תיאור התנועה'].tolist()
+    df_inc_filtered = df_inc_raw[df_inc_raw['תיאור התנועה'].isin(final_approved)]
 
     # סינון הנתונים המקוריים לפי מה שנבחר בטבלה
     approved_descriptions = edited_income[edited_income["נכלל בתזרים"] == True]['תיאור התנועה'].tolist()
@@ -143,3 +179,14 @@ if bank_up and credit_up:
         st.table(summary.sort_index(ascending=False).style.format("₪{:,.2f}"))
     else:
         st.warning("לא נמצאו חודשים מלאים קודמים בקבצים שהעלית.")
+
+with st.sidebar:
+    st.header("⚙️ הגדרות מערכת")
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            st.download_button(
+                label="📥 הורד קובץ הגדרות לגיבוי",
+                data=f.read(),
+                file_name="my_finance_settings.json",
+                mime="application/json"
+            )
