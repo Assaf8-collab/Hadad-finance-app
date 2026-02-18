@@ -67,20 +67,40 @@ credit_up = st.file_uploader("העלה קובץ אשראי (CSV)", type="csv")
 if bank_up and credit_up:
     df_inc_raw, df_bank_exp, df_c = process_data(bank_up, credit_up)
     
-    # --- חלק אינטראקטיבי: ניהול הכנסות ---
+    # --- חלק אינטראקטיבי משופר: ניהול הכנסות ---
     st.divider()
-    st.subheader("🏦 הגדרת הכנסות תזרימיות")
-    st.info("בחר מהרשימה רק את הסעיפים שהם הכנסה 'אמיתית' (משכורות וכדומה)")
+    st.subheader("🏦 הגדרת מקורות הכנסה")
+    st.write("סמן את מקורות ההכנסה האמיתיים (משכורות, קצבאות וכו'). פריטים שלא יסומנו יושמטו מהתזרים.")
+
+    # יצירת טבלת סיכום של מקורות הכנסה לבחירה
+    # אנחנו מקבצים לפי תיאור כדי שלא תצטרך לסמן כל חודש בנפרד
+    income_options = df_inc_raw.groupby('תיאור התנועה').agg({
+        'סכום': ['sum', 'mean', 'count']
+    }).reset_index()
     
-    all_income_sources = sorted(df_inc_raw['תיאור התנועה'].unique())
-    selected_sources = st.multiselect(
-        "מקורות הכנסה מאושרים:",
-        options=all_income_sources,
-        default=all_income_sources
+    income_options.columns = ['תיאור התנועה', 'סך הכל שהתקבל', 'ממוצע חודשי', 'מספר פעמים']
+    
+    # הוספת עמודת בחירה (Checkmark)
+    income_options.insert(0, "נכלל בתזרים", True)
+
+    # הצגת טבלה אינטראקטיבית שנוחה לקריאה בנייד
+    edited_income = st.data_editor(
+        income_options,
+        column_config={
+            "נכלל בתזרים": st.column_config.CheckboxColumn("אישור", default=True),
+            "תיאור התנועה": st.column_config.TextColumn("תיאור מקור ההכנסה", width="large"),
+            "סך הכל שהתקבל": st.column_config.NumberColumn("סכום מצטבר", format="₪%.0f"),
+            "ממוצע חודשי": st.column_config.NumberColumn("ממוצע", format="₪%.0f"),
+        },
+        disabled=['תיאור התנועה', 'סך הכל שהתקבל', 'ממוצע חודשי', 'מספר פעמים'],
+        hide_index=True,
     )
+
+    # סינון הנתונים המקוריים לפי מה שנבחר בטבלה
+    approved_descriptions = edited_income[edited_income["נכלל בתזרים"] == True]['תיאור התנועה'].tolist()
+    df_inc_filtered = df_inc_raw[df_inc_raw['תיאור התנועה'].isin(approved_descriptions)]
     
-    # סינון הכנסות לפי בחירת המשתמש
-    df_inc_filtered = df_inc_raw[df_inc_raw['תיאור התנועה'].isin(selected_sources)]
+    # --- המשך חישוב הסיכום החודשי (כמו קודם) ---
     
     # --- חישוב סיכום חודשי (איחוד וסינון חודשים) ---
     monthly_inc = df_inc_filtered.groupby('Month')['סכום'].sum()
