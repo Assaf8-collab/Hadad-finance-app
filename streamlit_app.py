@@ -27,7 +27,6 @@ def load_settings():
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                # וידוא שכל מפתחות החובה קיימים
                 for key in default_settings:
                     if key not in data: data[key] = default_settings[key]
                 return data
@@ -56,7 +55,7 @@ def get_exchange_info(amt, curr, date):
         try:
             ils_amt = c_conv.convert(amt, curr, 'ILS', date=date)
             return ils_amt, ils_amt / amt
-        except: pass # יפול לשערי הגיבוי אם חסר תאריך במאגר
+        except: pass
     
     rates = {'EUR': 4.1, 'USD': 3.7}
     fallback_rate = rates.get(curr, 1.0)
@@ -64,7 +63,6 @@ def get_exchange_info(amt, curr, date):
 
 def get_initial_category(desc, settings):
     desc_str = str(desc)
-    # סדרי עדיפויות בסיווג:
     if desc_str in settings.get('savings_list', []): return 'חסכון והשקעות'
     if desc_str in settings.get('credit_categories', {}): return settings['credit_categories'][desc_str]
     
@@ -116,7 +114,7 @@ if bank_up and credit_up:
         df_inc_raw = df_b[df_b['סכום'] > 0].copy()
         df_exp_raw = df_b[(df_b['סכום'] < 0) & (~df_b['מקור התנועה'].str.lower().str.contains('|'.join(credit_keys), na=False))].copy()
     except Exception as e:
-        st.error(f"שגיאה בעיבוד קובץ העו\"ש. ודא שזהו הפורמט הנכון. פירוט: {e}")
+        st.error(f"שגיאה בעיבוד קובץ העו\"ש. פירוט: {e}")
         st.stop()
 
     # --- ב. עיבוד אשראי (עם המרת מט"ח) ---
@@ -124,7 +122,6 @@ if bank_up and credit_up:
         df_c_raw = pd.read_csv(credit_up, skiprows=8)
         c_processed = []
         for _, row in df_c_raw.iterrows():
-            # מציאת עמודת הסכום הרלוונטית (סכום מקורי או חיוב)
             val = row.get('סכום מקורי', row.get('סכום חיוב', row.get('סכום החיוב', 0)))
             amt, curr = clean_and_detect_currency(val)
             dt = pd.to_datetime(row['תאריך עסקה'], dayfirst=True, errors='coerce')
@@ -156,7 +153,6 @@ if bank_up and credit_up:
     
     with t1:
         m_inc = df_inc_raw[df_inc_raw['Month'] == sel_month].groupby('מקור התנועה')['סכום'].sum().reset_index()
-        # אם הזיכרון ריק, מסמן הכל ב-V. אם לא, בודק מול הזיכרון.
         m_inc.insert(0, "אישור", m_inc['מקור התנועה'].isin(settings['approved_income']) if settings['approved_income'] else True)
         ed_inc = st.data_editor(m_inc, hide_index=True, key="inc_ed", column_config={"מקור התנועה": st.column_config.TextColumn(width="large")})
         
@@ -178,7 +174,6 @@ if bank_up and credit_up:
                               })
 
     if st.button("💾 שמור הגדרות"):
-        # חישוב: מה שהיה בזיכרון, פחות מה שמוצג כרגע בטבלה, פלוס מה שסומן כעת
         settings['approved_income'] = list((set(settings['approved_income']) - set(m_inc['מקור התנועה'])) | set(ed_inc[ed_inc["אישור"]]['מקור התנועה']))
         settings['approved_expenses'] = list((set(settings['approved_expenses']) - set(m_exp['מקור התנועה'])) | set(ed_exp[ed_exp["אישור"]]['מקור התנועה']))
         settings['savings_list'] = list((set(settings['savings_list']) - set(m_exp['מקור התנועה'])) | set(ed_exp[ed_exp["חסכון?"]]['מקור התנועה']))
@@ -194,10 +189,9 @@ if bank_up and credit_up:
         st.success("ההגדרות נשמרו בהצלחה!")
         st.rerun()
 
-    # --- ד. סיכום התזרים (שלבים 2 ו-3) ---
+    # --- ד. סיכום התזרים ---
     st.divider()
     
-    # סינון כל ההיסטוריה לפי ההגדרות העדכניות
     f_inc = df_inc_raw[df_inc_raw['מקור התנועה'].isin(settings['approved_income']) if settings['approved_income'] else [True]*len(df_inc_raw)]
     f_bank_exp = df_exp_raw[df_exp_raw['מקור התנועה'].isin(settings['approved_expenses']) if settings['approved_expenses'] else [True]*len(df_exp_raw)]
     
@@ -210,7 +204,6 @@ if bank_up and credit_up:
         'הוצאות אשראי': f_credit.groupby('Month')['סכום'].sum()
     }).fillna(0)
     
-    # מסנן רק לחודשים שלמים שהסתיימו (הקטנים מהחודש הנוכחי)
     summary_past = summary[summary.index < curr_m].copy()
     
     if not summary_past.empty:
@@ -220,10 +213,8 @@ if bank_up and credit_up:
         st.subheader("📊 שלב 2: סיכום תזרים מזומנים (חודשים מלאים)")
         st.table(summary_past.sort_index(ascending=False).style.format("₪{:,.0f}"))
 
-        # ניתוח "לאן הלך הכסף"
         st.subheader(f"🔍 שלב 3: התפלגות הוצאות - {sel_month}")
         
-        # איחוד קטגוריות אשראי ובנק (זיהוי חסכונות מהבנק)
         c_cat = f_credit[f_credit['Month'] == sel_month][['קטגוריה', 'סכום']]
         b_cat = f_bank_exp[f_bank_exp['Month'] == sel_month].copy()
         b_cat['קטגוריה'] = b_cat['מקור התנועה'].apply(lambda y: 'חסכון והשקעות' if y in settings['savings_list'] else 'אחר')
