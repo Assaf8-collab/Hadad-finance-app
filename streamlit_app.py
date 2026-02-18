@@ -128,3 +128,4 @@ if bank_up and credit_up:
         st.divider()
         st.subheader("📊 טבלת תזרים מזומנים סופית")
         st.table(summary.sort_index(ascending=False).style.format("₪{:,.2f}"))
+        
