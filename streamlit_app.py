@@ -11,13 +11,11 @@ CATEGORY_MAP = {
 }
 
 def get_category(description):
-    if pd.isna(description) or description == "":
-        return 'אחר'
+    if pd.isna(description) or description == "": return 'אחר'
     description = str(description).lower()
     for category, keywords in CATEGORY_MAP.items():
         for key in keywords:
-            if key in description:
-                return category
+            if key in description: return category
     return 'אחר'
 
 def clean_amount(value):
@@ -29,22 +27,25 @@ def clean_amount(value):
     except:
         return 0.0
 
-# 2. פונקציית עיבוד הנתונים - עכשיו מחזירה גם את טבלת האשראי המפורטת
+# 2. פונקציית עיבוד הנתונים
 def process_data(bank_file, credit_file):
-    # עיבוד עו"ש
+    # עיבוד עו"ש - שימוש בשם העמודה המדויק עם הרווח בסוף
     df_bank = pd.read_csv(bank_file, skiprows=7)
     df_bank['תאריך'] = pd.to_datetime(df_bank['תאריך'], dayfirst=True, errors='coerce')
     df_bank['סכום'] = df_bank['₪ זכות/חובה '].apply(clean_amount)
     df_bank = df_bank.dropna(subset=['תאריך'])
+    df_bank['Month'] = df_bank['תאריך'].dt.to_period('M')
     
+    # הפרדה להכנסות גולמיות
+    df_income_raw = df_bank[df_bank['סכום'] > 0].copy()
+    
+    # הפרדה להוצאות בנק (ללא חיובי אשראי)
     credit_keywords = ['כ.א.ל', 'מקס', 'ישראכרט', 'חיוב לכרטיס', 'ויזה']
-    
-    bank_income = df_bank[df_bank['סכום'] > 0].copy()
-    bank_expenses = df_bank[
+    df_bank_exp = df_bank[
         (df_bank['סכום'] < 0) & 
         (~df_bank['תיאור התנועה'].str.contains('|'.join(credit_keywords), na=False))
     ].copy()
-    bank_expenses['סכום'] = bank_expenses['סכום'].abs()
+    df_bank_exp['סכום'] = df_bank_exp['סכום'].abs()
 
     # עיבוד אשראי
     df_credit = pd.read_csv(credit_file, skiprows=8)
@@ -54,68 +55,71 @@ def process_data(bank_file, credit_file):
     df_credit['Month'] = df_credit['תאריך עסקה'].dt.to_period('M')
     df_credit['קטגוריה'] = df_credit['בית עסק'].apply(get_category)
 
-    # איחוד נתונים לפי חודש
-    bank_income['Month'] = bank_income['תאריך'].dt.to_period('M')
-    bank_expenses['Month'] = bank_expenses['תאריך'].dt.to_period('M')
+    return df_income_raw, df_bank_exp, df_credit
 
-    monthly_inc = bank_income.groupby('Month')['סכום'].sum()
-    monthly_bank_exp = bank_expenses.groupby('Month')['סכום'].sum()
-    monthly_credit_exp = df_credit.groupby('Month')['סכום'].sum()
+# 3. ממשק המשתמש
+st.set_page_config(page_title="ניהול תקציב משפחתי", layout="wide")
+st.title("💰 תזרים מזומנים וניהול הוצאות")
 
+bank_up = st.file_uploader("העלה קובץ עו\"ש (CSV)", type="csv")
+credit_up = st.file_uploader("העלה קובץ אשראי (CSV)", type="csv")
+
+if bank_up and credit_up:
+    df_inc_raw, df_bank_exp, df_c = process_data(bank_up, credit_up)
+    
+    # --- חלק אינטראקטיבי: ניהול הכנסות ---
+    st.divider()
+    st.subheader("🏦 הגדרת הכנסות תזרימיות")
+    st.info("בחר מהרשימה רק את הסעיפים שהם הכנסה 'אמיתית' (משכורות וכדומה)")
+    
+    all_income_sources = sorted(df_inc_raw['תיאור התנועה'].unique())
+    selected_sources = st.multiselect(
+        "מקורות הכנסה מאושרים:",
+        options=all_income_sources,
+        default=all_income_sources
+    )
+    
+    # סינון הכנסות לפי בחירת המשתמש
+    df_inc_filtered = df_inc_raw[df_inc_raw['תיאור התנועה'].isin(selected_sources)]
+    
+    # --- חישוב סיכום חודשי (איחוד וסינון חודשים) ---
+    monthly_inc = df_inc_filtered.groupby('Month')['סכום'].sum()
+    monthly_bank_exp = df_bank_exp.groupby('Month')['סכום'].sum()
+    monthly_credit_exp = df_c.groupby('Month')['סכום'].sum()
+    
     summary = pd.DataFrame({
         'הכנסות': monthly_inc,
         'הוצאות בנק': monthly_bank_exp,
         'הוצאות אשראי': monthly_credit_exp
     }).fillna(0)
-
-    # סינון חודשים שלמים בלבד
+    
+    # סינון חודשים שלמים בלבד (לפני החודש הנוכחי)
     current_month = pd.Timestamp.now().to_period('M')
     summary = summary[summary.index < current_month]
-
-    summary['סה"כ הוצאות'] = summary['הוצאות בנק'] + summary['הוצאות אשראי']
-    summary['נטו (נשאר בכיס)'] = summary['הכנסות'] - summary['סה"כ הוצאות']
     
-    return summary.sort_index(ascending=False), df_credit
-
-# 3. ממשק המשתמש
-st.set_page_config(page_title="תזרים מזומנים משפחתי", layout="wide")
-st.title("💰 סיכום תזרימי חודשי")
-
-bank_up = st.file_uploader("העלה עו\"ש", type="csv")
-credit_up = st.file_uploader("העלה אשראי", type="csv")
-
-if bank_up and credit_up:
-    # שליפת הנתונים מהפונקציה
-    summary_table, df_c = process_data(bank_up, credit_up)
-
-    if not summary_table.empty:
-        # א. מדדים ראשיים (KPIs)
-        last_month = summary_table.index[0]
-        st.subheader(f"סיכום לחודש {last_month}")
-        cols = st.columns(3)
-        cols[0].metric("הכנסות", f"₪{summary_table.loc[last_month, 'הכנסות']:,.0f}")
-        cols[1].metric("הוצאות", f"₪{summary_table.loc[last_month, 'סה\"כ הוצאות']:,.0f}")
-        cols[2].metric("נטו לתזרים", f"₪{summary_table.loc[last_month, 'נטו (נשאר בכיס)']:,.0f}")
-
-        # ב. ניתוח קטגוריות אשראי
+    if not summary.empty:
+        summary['סה"כ הוצאות'] = summary['הוצאות בנק'] + summary['הוצאות אשראי']
+        summary['נטו (נשאר בכיס)'] = summary['הכנסות'] - summary['סה"כ הוצאות']
+        
+        # --- תצוגת תוצאות ---
+        last_month = summary.index[0]
+        st.success(f"ניתוח לחודש מלא אחרון: {last_month}")
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("הכנסות", f"₪{summary.loc[last_month, 'הכנסות']:,.0f}")
+        m2.metric("הוצאות", f"₪{summary.loc[last_month, 'סה\"כ הוצאות']:,.0f}")
+        m3.metric("יתרה", f"₪{summary.loc[last_month, 'נטו (נשאר בכיס)']:,.0f}")
+        
+        # גרף התפלגות אשראי
         st.divider()
-        st.subheader(f"🔍 לאן הלך הכסף באשראי? ({last_month})")
+        st.subheader(f"📊 ניתוח קטגוריות אשראי - {last_month}")
+        last_month_c = df_c[df_c['Month'] == last_month]
+        cat_data = last_month_c.groupby('קטגוריה')['סכום'].sum().sort_values(ascending=False)
+        st.bar_chart(cat_data)
         
-        last_month_credit = df_c[df_c['Month'] == last_month]
-        category_summary = last_month_credit.groupby('קטגוריה')['סכום'].sum().sort_values(ascending=False)
-        
-        col_chart, col_table = st.columns([2, 1])
-        with col_chart:
-            st.bar_chart(category_summary)
-        with col_table:
-            st.write(category_summary.map("₪{:,.2f}".format))
-
-        # ג. טבלת השוואה חודשית
+        # טבלת סיכום רב-חודשית
         st.divider()
-        st.subheader("📊 השוואה חודש מול חודש")
-        st.table(summary_table.style.format("₪{:,.2f}"))
-        
-        # גרף מגמות
-        st.line_chart(summary_table[['הכנסות', 'סה"כ הוצאות']])
+        st.subheader("📅 השוואה חודש מול חודש")
+        st.table(summary.sort_index(ascending=False).style.format("₪{:,.2f}"))
     else:
-        st.info("לא נמצאו מספיק נתונים של חודשים מלאים בקבצים שהועלו.")
+        st.warning("לא נמצאו חודשים מלאים קודמים בקבצים שהעלית.")
