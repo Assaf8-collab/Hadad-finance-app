@@ -11,6 +11,9 @@ CATEGORY_MAP = {
 }
 
 def get_category(description):
+    if pd.isna(description) or description == "":
+        return 'אחר'
+    
     description = str(description).lower()
     for category, keywords in CATEGORY_MAP.items():
         for key in keywords:
@@ -89,12 +92,15 @@ credit_up = st.file_uploader("העלה אשראי", type="csv")
 if bank_up and credit_up:
     summary_table = process_data(bank_up, credit_up)
 
-    # ניתוח קטגוריות לאשראי
-    st.divider()
-    st.subheader("🔍 ניתוח הוצאות אשראי (חודש אחרון)")
-    
-    # הוספת קטגוריות לנתוני האשראי הגולמיים
-    df_c['קטגוריה'] = df_c['בית עסק'].apply(get_category)
+   # ניתוח קטגוריות לאשראי
+if not df_c.empty:
+    # וידוא ששם העמודה מדויק (לפעמים יש רווחים בקצוות מה-CSV)
+    if 'בית עסק' in df_c.columns:
+        df_c['קטגוריה'] = df_c['בית עסק'].apply(get_category)
+    elif 'בית העסק' in df_c.columns: # בדיקת שם חלופי נפוץ
+        df_c['קטגוריה'] = df_c['בית העסק'].apply(get_category)
+    else:
+        st.warning("לא נמצאה עמודת 'בית עסק' בקובץ האשראי")
     
     # סינון לחודש האחרון המלא
     last_full_month = summary_table.index[0]
@@ -115,6 +121,17 @@ if bank_up and credit_up:
     cols[0].metric(f"הכנסות ({last_month})", f"₪{summary_table.loc[last_month, 'הכנסות']:,.0f}")
     cols[1].metric(f"הוצאות ({last_month})", f"₪{summary_table.loc[last_month, 'סה\"כ הוצאות']:,.0f}")
     cols[2].metric("יתרה לתזרים", f"₪{summary_table.loc[last_month, 'נטו (נשאר בכיס)']:,.0f}")
+
+    # סינון חודשים: מציג רק חודשים שלמים שעברו
+    current_month = pd.Timestamp.now().to_period('M')
+    summary_table = summary_table[summary_table.index < current_month]
+
+    # הצגת הטבלה רק אם יש נתונים לאחר הסינון
+if not summary_table.empty:
+    st.subheader("📊 סיכום תזרימי חודשי (חודשים מלאים)")
+    st.table(summary_table.style.format("₪{:,.2f}"))
+else:
+    st.info("עדיין אין נתונים עבור חודשים מלאים קודמים.")
 
     # טבלת סיכום
     st.subheader("השוואה חודש מול חודש")
