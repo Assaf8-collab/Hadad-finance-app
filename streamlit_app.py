@@ -161,3 +161,26 @@ if bank_up and credit_up:
         st.divider()
         st.subheader("📊 סיכום תזרים מזומנים סופי")
         st.table(summary.sort_index(ascending=False).style.format("₪{:,.2f}"))
+
+# איחוד כל ההוצאות לצורך ניתוח קטגוריות
+    all_expenses = pd.concat([
+        df_c[['Month', 'קטגוריה', 'סכום']],
+        df_exp_f[['Month', 'קטגוריה', 'סכום']]
+    ])
+    
+    # הצגת ניתוח קטגוריות לחודש האחרון
+    last_m = summary.index[0]
+    st.divider()
+    st.subheader(f"📊 לאן הלך הכסף בחודש {last_m}?")
+    
+    cat_analysis = all_expenses[all_expenses['Month'] == last_m].groupby('קטגוריה')['סכום'].sum().sort_values(ascending=False)
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.bar_chart(cat_analysis)
+    with col2:
+        # הדגשת החסכון
+        if 'חסכון והשקעות' in cat_analysis:
+            saving_amount = cat_analysis['חסכון והשקעות']
+            st.metric("סכום שנחסך החודש", f"₪{saving_amount:,.0f}")
+        st.write(cat_analysis.map("₪{:,.2f}".format))
