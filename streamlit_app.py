@@ -1,6 +1,23 @@
 import streamlit as st
 import pandas as pd
 
+# מילון מילות מפתח לסיווג אוטומטי
+CATEGORY_MAP = {
+    'מזון וסופר': ['שופרסל', 'הכל כאן', 'יוחננוף', 'קשת טעמים', 'רמי לוי', 'מאפיית'],
+    'חינוך וחוגים': ['נוקדים', 'מוסדות חינוך', 'עירייה', 'מתנ"ס'],
+    'תחבורה ורכב': ['פנגו', 'פז', 'סונול', 'דור אלון', 'חניון'],
+    'פנאי ומסעדות': ['קורטושוק', 'מסעדה', 'קפה', 'וולט', 'WOLT'],
+    'בריאות': ['סופר פארם', 'מכבי', 'כללית', 'בית מרקחת'],
+}
+
+def get_category(description):
+    description = str(description).lower()
+    for category, keywords in CATEGORY_MAP.items():
+        for key in keywords:
+            if key in description:
+                return category
+    return 'אחר'
+    
 # פונקציית ניקוי מספרים (מעודכנת לטיפול במינוסים וסימנים)
 def clean_amount(value):
     if pd.isna(value) or value == 'תיאור התנועה': return 0.0
@@ -44,14 +61,20 @@ def process_data(bank_file, credit_file):
     monthly_bank_exp = bank_expenses.groupby('Month')['סכום'].sum()
     monthly_credit_exp = df_credit.groupby('Month')['סכום'].sum()
 
-    # יצירת טבלת תזרים
+  # summary
+    
     summary = pd.DataFrame({
         'הכנסות': monthly_inc,
-        'הוצאות בנק (משכנתא/הו"ק)': monthly_bank_exp,
+        'הוצאות בנק': monthly_bank_exp,
         'הוצאות אשראי': monthly_credit_exp
     }).fillna(0)
 
-    summary['סה"כ הוצאות'] = summary['הוצאות בנק (משכנתא/הו"ק)'] + summary['הוצאות אשראי']
+    # סינון חודשים שלמים בלבד:
+    # אנחנו מסננים חודשים ששווים לחודש הנוכחי (כי הוא עדיין לא הסתיים)
+    current_month = pd.Timestamp.now().to_period('M')
+    summary = summary[summary.index < current_month]
+
+    summary['סה"כ הוצאות'] = summary['הוצאות בנק'] + summary['הוצאות אשראי']
     summary['נטו (נשאר בכיס)'] = summary['הכנסות'] - summary['סה"כ הוצאות']
     
     return summary.sort_index(ascending=False)
@@ -65,6 +88,26 @@ credit_up = st.file_uploader("העלה אשראי", type="csv")
 
 if bank_up and credit_up:
     summary_table = process_data(bank_up, credit_up)
+
+    # ניתוח קטגוריות לאשראי
+    st.divider()
+    st.subheader("🔍 ניתוח הוצאות אשראי (חודש אחרון)")
+    
+    # הוספת קטגוריות לנתוני האשראי הגולמיים
+    df_c['קטגוריה'] = df_c['בית עסק'].apply(get_category)
+    
+    # סינון לחודש האחרון המלא
+    last_full_month = summary_table.index[0]
+    last_month_data = df_c[df_c['Month'] == last_full_month]
+    
+    category_summary = last_month_data.groupby('קטגוריה')['סכום'].sum().sort_values(ascending=False)
+    
+    # הצגת גרף וטבלה זה לצד זה
+    col_chart, col_table = st.columns([2, 1])
+    with col_chart:
+        st.bar_chart(category_summary)
+    with col_table:
+        st.write(category_summary.map("₪{:,.2f}".format))
     
     # תצוגת המדדים של החודש האחרון
     last_month = summary_table.index[0]
