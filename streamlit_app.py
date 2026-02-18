@@ -29,6 +29,8 @@ CATEGORY_MAP = {
     'חינוך וחוגים': ['נוקדים', 'מוסדות חינוך', 'עירייה', 'מתנ"ס'],
     'תחבורה ורכב': ['פנגו', 'פז', 'סונול', 'דור אלון', 'חניון'],
     'פנאי ומסעדות': ['קורטושוק', 'מסעדה', 'קפה', 'וולט', 'WOLT'],
+    'חסכון והשקעות': ['הפקדה', 'חסכון', 'ניירות ערך', 'קופת גמל', 'פנסיה', 'השתלמות', 'פקדון'],
+    'מגורים ואחזקה': ['ארנונה', 'חשמל', 'ועד בית', 'מי שבע'],
 }
 
 def get_category(description):
@@ -138,7 +140,17 @@ if bank_up and credit_up:
 
     summary = pd.DataFrame({
         'הכנסות': df_inc_f.groupby('Month')['סכום'].sum(),
-        'הוצאות בנק': df_exp_f.groupby('Month')['סכום'].sum().abs(),
+        # סינון סופי של הוצאות בנק והוספת קטגוריות
+        final_settings = load_settings()
+        approved_exp_names = final_settings.get('approved_expenses', [])
+    
+        if approved_exp_names:
+            df_exp_f = df_bank_exp_raw[df_bank_exp_raw['מקור התנועה'].isin(approved_exp_names)].copy()
+        else:
+            df_exp_f = df_bank_exp_raw.copy()
+        
+        # הוספת קטגוריה גם להוצאות הבנק
+        df_exp_f['קטגוריה'] = df_exp_f['מקור התנועה'].apply(get_category)
         'הוצאות אשראי': df_c.groupby('Month')['סכום'].sum()
     }).fillna(0)
     
