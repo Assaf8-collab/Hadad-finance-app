@@ -40,16 +40,16 @@ def get_category(description, savings_list):
     if pd.isna(description): return 'אחר'
     desc = str(description)
     
-    # 1. בדיקת סיווג ידני כחסכון מה-UI
+    # 1. בדיקת סיווג ידני כחסכון (מה-UI של ההוצאות)
     if desc in savings_list:
         return 'חסכון והשקעות'
     
-    # 2. זיהוי לפי מילות מפתח קבועות
+    # 2. זיהוי לפי מילות מפתח
     desc_lower = desc.lower()
     for cat, keys in CATEGORY_MAP.items():
         if any(k in desc_lower for k in keys): return cat
     
-    # 3. זיהוי חסכון גנרי ממילות מפתח (גיבוי)
+    # 3. זיהוי חסכון גנרי ממילות מפתח
     savings_keywords = ['הפקדה', 'חסכון', 'ניירות ערך', 'קופת גמל', 'פנסיה', 'השתלמות', 'פקדון']
     if any(k in desc_lower for k in savings_keywords):
         return 'חסכון והשקעות'
@@ -91,12 +91,11 @@ if bank_up and credit_up:
     df_bank = df_bank.dropna(subset=['תאריך']).rename(columns={'תיאור התנועה': 'מקור התנועה'})
     df_bank['Month'] = df_bank['תאריך'].dt.to_period('M')
     
-    # סינון חיובי אשראי מהעו"ש למניעת כפילות
     credit_keywords = ['כ.א.ל', 'מקס', 'ישראכרט', 'חיוב לכרטיס', 'ויזה']
     df_inc_raw = df_bank[df_bank['סכום'] > 0].copy()
     df_bank_exp_raw = df_bank[(df_bank['סכום'] < 0) & (~df_bank['מקור התנועה'].str.contains('|'.join(credit_keywords), na=False))].copy()
 
-    # --- שלב המיון והסיווג האינטראקטיבי ---
+    # --- שלב המיון ---
     st.divider()
     st.subheader("🛠️ שלב 1: אישור וסיווג תנועות עו\"ש")
     
@@ -109,7 +108,6 @@ if bank_up and credit_up:
         with col_inc:
             st.write(f"**הכנסות - {selected_month}**")
             m_inc = df_inc_raw[df_inc_raw['Month'] == selected_month].groupby('מקור התנועה')['סכום'].sum().reset_index()
-            m_inc.insert(0, "חסכון?", m_inc['מקור התנועה'].isin(prev_sav))
             m_inc.insert(0, "אישור", m_inc['מקור התנועה'].isin(prev_inc) if prev_inc else True)
             ed_inc = st.data_editor(m_inc, hide_index=True, key=f"inc_{selected_month}", column_config={"מקור התנועה": st.column_config.TextColumn(width="large")})
 
@@ -120,45 +118,37 @@ if bank_up and credit_up:
             m_exp.insert(0, "אישור", m_exp['מקור התנועה'].isin(prev_exp) if prev_exp else True)
             ed_exp = st.data_editor(m_exp, hide_index=True, key=f"exp_{selected_month}", column_config={"מקור התנועה": st.column_config.TextColumn(width="large")})
 
-        if st.button("💾 שמור הגדרות (המערכת תזכור את הבחירות לחודשים הבאים)"):
-            # עדכון רשימות האישור והחסכון
+        if st.button("💾 שמור הגדרות"):
+            # איסוף אישורים
             curr_inc_approved = set(ed_inc[ed_inc["אישור"] == True]['מקור התנועה'])
             curr_exp_approved = set(ed_exp[ed_exp["אישור"] == True]['מקור התנועה'])
-            curr_inc_sav = set(ed_inc[ed_inc["חסכון?"] == True]['מקור התנועה'])
+            # איסוף חסכונות (מההוצאות בלבד)
             curr_exp_sav = set(ed_exp[ed_exp["חסכון?"] == True]['מקור התנועה'])
             
-            # לוגיקה לעדכון הזיכרון (מוסיף חדשים ומסיר את מה שבוטל בטבלה הנוכחית)
             final_inc = (set(prev_inc) - set(ed_inc['מקור התנועה'])) | curr_inc_approved
             final_exp = (set(prev_exp) - set(ed_exp['מקור התנועה'])) | curr_exp_approved
-            final_sav = (set(prev_sav) - (set(ed_inc['מקור התנועה']) | set(ed_exp['מקור התנועה']))) | curr_inc_sav | curr_exp_sav
+            final_sav = (set(prev_sav) - set(ed_exp['מקור התנועה'])) | curr_exp_sav
             
             save_settings(list(final_inc), list(final_exp), list(final_sav))
             st.success("ההגדרות נשמרו!")
             st.rerun()
 
-    # --- עיבוד סופי וניתוח "לאן הולך הכסף" ---
-    updated_settings = load_settings()
-    approved_inc = updated_settings['approved_income']
-    approved_exp = updated_settings['approved_expenses']
-    savings_list = updated_settings['savings_list']
-
-    df_inc_f = df_inc_raw[df_inc_raw['מקור התנועה'].isin(approved_inc)] if approved_inc else df_inc_raw
-    df_exp_f = df_bank_exp_raw[df_bank_exp_raw['מקור התנועה'].isin(approved_exp)] if approved_exp else df_bank_exp_raw
+    # --- עיבוד סופי ---
+    up_set = load_settings()
+    df_inc_f = df_inc_raw[df_inc_raw['מקור התנועה'].isin(up_set['approved_income'])] if up_set['approved_income'] else df_inc_raw
+    df_exp_f = df_bank_exp_raw[df_bank_exp_raw['מקור התנועה'].isin(up_set['approved_expenses'])] if up_set['approved_expenses'] else df_bank_exp_raw
     
-    # הוספת קטגוריות
-    df_inc_f = df_inc_f.copy()
-    df_inc_f['קטגוריה'] = df_inc_f['מקור התנועה'].apply(lambda x: get_category(x, savings_list))
     df_exp_f = df_exp_f.copy()
-    df_exp_f['קטגוריה'] = df_exp_f['מקור התנועה'].apply(lambda x: get_category(x, savings_list))
+    df_exp_f['קטגוריה'] = df_exp_f['מקור התנועה'].apply(lambda x: get_category(x, up_set['savings_list']))
 
-    # עיבוד אשראי
+    # אשראי
     df_c = pd.read_csv(credit_up, skiprows=8)
     df_c['סכום'] = df_c['סכום החיוב'].apply(clean_amount)
     df_c['תאריך עסקה'] = pd.to_datetime(df_c['תאריך עסקה'], dayfirst=True, errors='coerce')
     df_c['Month'] = df_c['תאריך עסקה'].dt.to_period('M')
-    df_c['קטגוריה'] = df_c['בית עסק'].apply(lambda x: get_category(x, savings_list))
+    df_c['קטגוריה'] = df_c['בית עסק'].apply(lambda x: get_category(x, up_set['savings_list']))
 
-    # סיכום תזרימי
+    # תזרים
     summary = pd.DataFrame({
         'הכנסות': df_inc_f.groupby('Month')['סכום'].sum(),
         'הוצאות בנק': df_exp_f.groupby('Month')['סכום'].sum().abs(),
@@ -172,36 +162,23 @@ if bank_up and credit_up:
         summary['נטו'] = summary['הכנסות'] - summary['סה"כ הוצאות']
         
         st.divider()
-        st.subheader("📊 שלב 2: סיכום תזרים מזומנים סופי")
+        st.subheader("📊 שלב 2: סיכום תזרים מזומנים")
         st.table(summary.sort_index(ascending=False).style.format("₪{:,.2f}"))
 
-        # --- ניתוח קטגוריות משולב ---
+        # ניתוח "לאן הולך הכסף"
         last_m = summary.index[0]
-        st.subheader(f"🔍 שלב 3: לאן הולך הכסף? (ניתוח חודש {last_m})")
+        st.subheader(f"🔍 שלב 3: התפלגות הוצאות וחיסכון - {last_m}")
         
-        # איחוד כלל ההוצאות והחסכונות לצורך הגרף
-        combined_analysis = pd.concat([
+        combined = pd.concat([
             df_c[df_c['Month'] == last_m][['קטגוריה', 'סכום']],
-            df_exp_f[df_exp_f['Month'] == last_m][['קטגוריה', 'סכום']],
-            df_inc_f[df_inc_f['Month'] == last_m][['קטגוריה', 'סכום']] # כולל הכנסות שסומנו כחסכון
+            df_exp_f[df_exp_f['Month'] == last_m][['קטגוריה', 'סכום']]
         ])
         
-        # סינון להצגת קטגוריות הוצאה וחיסכון בלבד (מתעלמים מהכנסה רגילה בגרף)
-        cat_final = combined_analysis[combined_analysis['קטגוריה'] != 'אחר'].groupby('קטגוריה')['סכום'].sum().sort_values(ascending=False)
-        
-        
+        cat_final = combined.groupby('קטגוריה')['סכום'].sum().sort_values(ascending=False)
         
         c1, c2 = st.columns([2, 1])
-        with c1:
-            st.bar_chart(cat_final)
+        with c1: st.bar_chart(cat_final)
         with c2:
             if 'חסכון והשקעות' in cat_final:
                 st.metric("סכום שנחסך", f"₪{cat_final['חסכון והשקעות']:,.0f}")
-                
-            # חישוב אחוז חסכון מההכנסה
-            total_inc = summary.loc[last_m, 'הכנסות']
-            if total_inc > 0 and 'חסכון והשקעות' in cat_final:
-                savings_pct = (cat_analysis := cat_final['חסכון והשקעות'] / total_inc) * 100
-                st.metric("שיעור חסכון", f"{savings_pct:.1f}%")
-            
             st.write(cat_final.map("₪{:,.2f}".format))
