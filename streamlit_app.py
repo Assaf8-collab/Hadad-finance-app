@@ -12,14 +12,17 @@ def load_settings():
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except:
-            return {"approved_sources": []}
-    return {"approved_sources": []}
+            return {"approved_income": [], "approved_expenses": []}
+    return {"approved_income": [], "approved_expenses": []}
 
-def save_settings(approved_list):
+def save_settings(income_list, expense_list):
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump({"approved_sources": approved_list}, f, ensure_ascii=False, indent=4)
+        json.dump({
+            "approved_income": income_list,
+            "approved_expenses": expense_list
+        }, f, ensure_ascii=False, indent=4)
 
-# --- 2. פונקציות עזר לעיבוד ---
+# --- 2. פונקציות עזר ---
 CATEGORY_MAP = {
     'מזון וסופר': ['שופרסל', 'הכל כאן', 'יוחננוף', 'קשת טעמים', 'רמי לוי', 'מאפיית'],
     'חינוך וחוגים': ['נוקדים', 'מוסדות חינוך', 'עירייה', 'מתנ"ס'],
@@ -45,84 +48,70 @@ def clean_amount(value):
     except:
         return 0.0
 
-# --- 3. ממשק משתמש (Streamlit) ---
-st.set_page_config(page_title="ניהול תקציב - משפחת חדד", layout="wide")
-st.title("💰 תזרים מזומנים וניהול הוצאות")
+# --- 3. ממשק משתמש ---
+st.set_page_config(page_title="ניהול תקציב משפחתי", layout="wide")
+st.title("💰 ניהול תזרים מזומנים חכם")
 
 bank_up = st.file_uploader("העלה קובץ עו\"ש (CSV)", type="csv")
 credit_up = st.file_uploader("העלה קובץ אשראי (CSV)", type="csv")
 
 if bank_up and credit_up:
-    # --- א. עיבוד נתונים ראשוני (עו"ש דיסקונט) ---
+    # טעינת הגדרות
+    settings = load_settings()
+    prev_inc = settings.get("approved_income", [])
+    prev_exp = settings.get("approved_expenses", [])
+
+    # עיבוד ראשוני בנק
     df_bank = pd.read_csv(bank_up, skiprows=7)
-    # שימוש בשמות העמודות המדויקים מהקובץ
     df_bank['תאריך'] = pd.to_datetime(df_bank['תאריך'], dayfirst=True, errors='coerce')
     df_bank['סכום'] = df_bank['₪ זכות/חובה '].apply(clean_amount)
-    df_bank = df_bank.dropna(subset=['תאריך'])
+    df_bank = df_bank.dropna(subset=['תאריך']).rename(columns={'תיאור התנועה': 'מקור התנועה'})
     df_bank['Month'] = df_bank['תאריך'].dt.to_period('M')
     
-    # שינוי שם העמודה כבר כאן כדי למנוע את ה-KeyError
-    df_bank = df_bank.rename(columns={'תיאור התנועה': 'מקור התנועה'})
-    
-    df_inc_raw = df_bank[df_bank['סכום'] > 0].copy()
-    
-    # --- ב. ניהול הכנסות אינטראקטיבי ---
-    st.divider()
-    st.subheader("🏦 הגדרת מקורות הכנסה")
-    st.info("סמן את מקורות ההכנסה התזרימיים (משכורת וכו'). תיאורים ארוכים לא ייחתכו.")
-
-    settings = load_settings()
-    previously_approved = settings.get("approved_sources", [])
-
-    # הכנת טבלת אפשרויות לסימון
-    income_options = df_inc_raw.groupby('מקור התנועה')['סכום'].agg(['sum', 'count']).reset_index()
-    income_options.columns = ['מקור התנועה', 'סכום מצטבר', 'פעמים']
-    
-    # הוספת עמודת ה-Checkbox
-    income_options.insert(0, "אישור", income_options['מקור התנועה'].isin(previously_approved))
-
-    edited_income = st.data_editor(
-        income_options,
-        column_config={
-            "אישור": st.column_config.CheckboxColumn("נכלל?", default=True),
-            "מקור התנועה": st.column_config.TextColumn("תיאור מלא מהבנק", width="large"),
-            "סכום מצטבר": st.column_config.NumberColumn("סה\"כ בקובץ", format="₪%.0f"),
-        },
-        disabled=['מקור התנועה', 'סכום מצטבר', 'פעמים'],
-        hide_index=True,
-        key="income_editor_v2"
-    )
-
-    if st.button("💾 שמור בחירות לחודש הבא"):
-        new_approved = edited_income[edited_income["אישור"] == True]['מקור התנועה'].tolist()
-        save_settings(new_approved)
-        st.success("הבחירות נשמרו בהצלחה!")
-
-    # סינון ההכנסות המאושרות (כאן נפתר ה-KeyError)
-    approved_list = edited_income[edited_income["אישור"] == True]['מקור התנועה'].tolist()
-    df_inc_filtered = df_inc_raw[df_inc_raw['מקור התנועה'].isin(approved_list)]
-
-    # --- ג. עיבוד הוצאות (בנק ואשראי) ---
+    # הפרדה להכנסות והוצאות בנק (ללא אשראי)
     credit_keywords = ['כ.א.ל', 'מקס', 'ישראכרט', 'חיוב לכרטיס', 'ויזה']
-    df_bank_exp = df_bank[(df_bank['סכום'] < 0) & (~df_bank['מקור התנועה'].str.contains('|'.join(credit_keywords), na=False))].copy()
-    df_bank_exp['סכום'] = df_bank_exp['סכום'].abs()
+    df_inc_raw = df_bank[df_bank['סכום'] > 0].copy()
+    df_bank_exp_raw = df_bank[(df_bank['סכום'] < 0) & (~df_bank['מקור התנועה'].str.contains('|'.join(credit_keywords), na=False))].copy()
 
-    df_credit = pd.read_csv(credit_up, skiprows=8)
-    df_credit['תאריך עסקה'] = pd.to_datetime(df_credit['תאריך עסקה'], dayfirst=True, errors='coerce')
-    df_credit['סכום'] = df_credit['סכום החיוב'].apply(clean_amount)
-    df_credit = df_credit.dropna(subset=['תאריך עסקה'])
-    df_credit['Month'] = df_credit['תאריך עסקה'].dt.to_period('M')
-    df_credit['קטגוריה'] = df_credit['בית עסק'].apply(get_category)
-
-    # --- ד. סיכום חודשי ותצוגה ---
-    monthly_inc = df_inc_filtered.groupby('Month')['סכום'].sum()
-    monthly_bank_exp = df_bank_exp.groupby('Month')['סכום'].sum()
-    monthly_credit_exp = df_credit.groupby('Month')['סכום'].sum()
+    # --- א. ניהול הכנסות ---
+    st.subheader("🏦 שלב 1: אישור הכנסות")
+    inc_opt = df_inc_raw.groupby('מקור התנועה')['סכום'].agg(['sum', 'count']).reset_index()
+    inc_opt.columns = ['מקור התנועה', 'סה"כ', 'פעמים']
+    inc_opt.insert(0, "אישור", inc_opt['מקור התנועה'].isin(prev_inc) if prev_inc else True)
     
+    ed_inc = st.data_editor(inc_opt, column_config={"מקור התנועה": st.column_config.TextColumn(width="large")}, hide_index=True, key="ed_inc")
+
+    # --- ב. ניהול הוצאות בנק ---
+    st.subheader("💸 שלב 2: אישור הוצאות עו\"ש (ללא אשראי)")
+    exp_opt = df_bank_exp_raw.groupby('מקור התנועה')['סכום'].agg(['sum', 'count']).reset_index()
+    exp_opt.columns = ['מקור התנועה', 'סה"כ', 'פעמים']
+    exp_opt['סה"כ'] = exp_opt['סה"כ'].abs()
+    exp_opt.insert(0, "אישור", exp_opt['מקור התנועה'].isin(prev_exp) if prev_exp else True)
+
+    ed_exp = st.data_editor(exp_opt, column_config={"מקור התנועה": st.column_config.TextColumn(width="large")}, hide_index=True, key="ed_exp")
+
+    if st.button("💾 שמור את כל הבחירות לחודש הבא"):
+        list_inc = ed_inc[ed_inc["אישור"] == True]['מקור התנועה'].tolist()
+        list_exp = ed_exp[ed_exp["אישור"] == True]['מקור התנועה'].tolist()
+        save_settings(list_inc, list_exp)
+        st.success("ההגדרות נשמרו!")
+
+    # סינון סופי
+    df_inc_f = df_inc_raw[df_inc_raw['מקור התנועה'].isin(ed_inc[ed_inc["אישור"] == True]['מקור התנועה'])]
+    df_exp_f = df_bank_exp_raw[df_bank_exp_raw['מקור התנועה'].isin(ed_exp[ed_exp["אישור"] == True]['מקור התנועה'])]
+
+    # עיבוד אשראי
+    df_c = pd.read_csv(credit_up, skiprows=8)
+    df_c['סכום'] = df_c['סכום החיוב'].apply(clean_amount)
+    df_c['תאריך עסקה'] = pd.to_datetime(df_c['תאריך עסקה'], dayfirst=True, errors='coerce')
+    df_c['Month'] = df_c['תאריך עסקה'].dt.to_period('M')
+    df_c['קטגוריה'] = df_c['בית עסק'].apply(get_category)
+
+    # --- ג. סיכום תזרימי ---
     summary = pd.DataFrame({
-        'הכנסות': monthly_inc,
-        'הוצאות בנק': monthly_bank_exp,
-        'הוצאות אשראי': monthly_credit_exp
+        'הכנסות': df_inc_f.groupby('Month')['סכום'].sum(),
+        'הוצאות בנק': df_exp_f.groupby('Month')['סכום'].sum().abs(),
+        'הוצאות אשראי': df_c.groupby('Month')['סכום'].sum()
     }).fillna(0)
     
     current_month = pd.Timestamp.now().to_period('M')
@@ -133,15 +122,11 @@ if bank_up and credit_up:
         summary['נטו'] = summary['הכנסות'] - summary['סה"כ הוצאות']
         
         st.divider()
-        st.subheader("📊 סיכום תזרימי (חודשים מלאים)")
+        st.subheader("📊 סיכום תזרים מזומנים חודשי")
         st.table(summary.sort_index(ascending=False).style.format("₪{:,.2f}"))
         
-        # גרף מגמות
-        st.line_chart(summary[['הכנסות', 'סה"כ הוצאות']])
-        
-        # ניתוח קטגוריות לחודש האחרון
-        last_month = summary.index[0]
-        st.subheader(f"🔍 פירוט הוצאות אשראי - {last_month}")
-        last_month_c = df_c = df_credit[df_credit['Month'] == last_month]
-        cat_summary = last_month_c.groupby('קטגוריה')['סכום'].sum().sort_values(ascending=False)
-        st.bar_chart(cat_summary)
+        # גרף התפלגות אשראי חודש אחרון
+        last_m = summary.index[0]
+        st.subheader(f"🔍 ניתוח אשראי - {last_m}")
+        cat_sum = df_c[df_c['Month'] == last_m].groupby('קטגוריה')['סכום'].sum().sort_values(ascending=False)
+        st.bar_chart(cat_sum)
