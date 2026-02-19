@@ -37,8 +37,18 @@ def save_settings(settings_dict):
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(settings_dict, f, ensure_ascii=False, indent=4)
 
-# --- 2. מנוע סיווג והמרות ---
+# --- 2. מנוע סיווג, המרות וחישובי תאריכים ---
 CATEGORIES = ['אחר', 'קניות סופר', 'רכב', 'ביטוח', 'ביגוד', 'אוכל בחוץ', 'בילויים', 'מגורים ואחזקה', 'חסכון והשקעות']
+
+def get_billing_month(date):
+    """
+    מחשב את חודש החיוב התזרימי של כרטיס האשראי.
+    תנועות מה-10 לחודש ומעלה נדחפות לתזרים של החודש הבא.
+    """
+    if pd.isna(date): return None
+    if date.day >= 10:
+        return (date + pd.DateOffset(months=1)).to_period('M')
+    return date.to_period('M')
 
 def clean_and_detect_currency(v):
     if pd.isna(v) or str(v).strip() == '' or str(v) == 'תיאור התנועה': 
@@ -108,6 +118,8 @@ if bank_up and credit_up:
         df_b['תאריך'] = pd.to_datetime(df_b['תאריך'], dayfirst=True, errors='coerce')
         df_b['סכום'] = df_b['₪ זכות/חובה '].apply(lambda x: clean_and_detect_currency(x)[0])
         df_b = df_b.dropna(subset=['תאריך']).rename(columns={'תיאור התנועה': 'מקור התנועה'})
+        
+        # בעו"ש, חודש התזרים הוא תמיד חודש הפעולה (כי זה מתי שהכסף יצא/נכנס בפועל)
         df_b['Month'] = df_b['תאריך'].dt.to_period('M')
         
         credit_keys = ['כ.א.ל', 'מקס', 'ישראכרט', 'חיוב לכרטיס', 'ויזה', 'cal', 'max']
@@ -117,7 +129,7 @@ if bank_up and credit_up:
         st.error(f"שגיאה בעיבוד קובץ העו\"ש. פירוט: {e}")
         st.stop()
 
-    # --- ב. עיבוד אשראי (עם המרת מט"ח) ---
+    # --- ב. עיבוד אשראי (עם חישוב חודש חיוב והמרת מט"ח) ---
     try:
         df_c_raw = pd.read_csv(credit_up, skiprows=8)
         c_processed = []
@@ -128,28 +140,32 @@ if bank_up and credit_up:
             
             ils_amt, rate = get_exchange_info(amt, curr, dt)
             
+            # חישוב החודש לפי תאריך החיוב (10 לחודש)
+            billing_month = get_billing_month(dt)
+            
             c_processed.append({
-                'תאריך': dt, 
+                'תאריך עסקה': dt, 
                 'בית עסק': row.get('בית עסק', 'לא ידוע'), 
                 'סכום': ils_amt, 
                 'מטבע_מקור': curr, 
-                'שער': rate, # FIX: שומרים תמיד שער 1.0 לשקלים כדי למנוע היעלמות בטבלה
-                'Month': dt.to_period('M') if not pd.isna(dt) else None
+                'שער': rate,
+                'Month': billing_month
             })
-        df_c = pd.DataFrame(c_processed).dropna(subset=['תאריך'])
+        df_c = pd.DataFrame(c_processed).dropna(subset=['תאריך עסקה'])
     except Exception as e:
         st.error(f"שגיאה בעיבוד קובץ האשראי. פירוט: {e}")
         st.stop()
 
     # --- ג. ממשק מיון וסיווג (שלב 1) ---
     curr_m = pd.Timestamp.now().to_period('M')
-    # FIX: איחוד חודשים מהבנק ומהאשראי
+    
+    # איחוד חודשים מהבנק ומהאשראי כדי ששום דבר לא ייעלם
     all_months = set(df_b['Month'].dropna().unique()).union(set(df_c['Month'].dropna().unique()))
     available_months = sorted([m for m in all_months if m <= curr_m], reverse=True)
     
     st.divider()
     if available_months:
-        sel_month = st.selectbox("בחר חודש לסיווג תנועות:", available_months)
+        sel_month = st.selectbox("בחר חודש לסיווג תנועות (מבוסס תאריך חיוב לאשראי):", available_months)
         st.subheader(f"🛠️ שלב 1: אישור וסיווג - {sel_month}")
         
         t1, t2, t3 = st.tabs(["🏦 הכנסות", "📉 הוצאות בנק", "💳 הוצאות אשראי"])
@@ -166,7 +182,6 @@ if bank_up and credit_up:
             ed_exp = st.data_editor(m_exp, hide_index=True, key="exp_ed", column_config={"מקור התנועה": st.column_config.TextColumn(width="large")})
 
         with t3:
-            # FIX: dropna=False מונע העלמת נתונים בקיבוץ
             m_c = df_c[df_c['Month'] == sel_month].groupby(['בית עסק', 'מטבע_מקור', 'שער'], dropna=False)['סכום'].sum().reset_index()
             m_c['קטגוריה'] = m_c['בית עסק'].apply(lambda x: get_initial_category(x, settings))
             m_c.insert(0, "תזרימי?", ~m_c['בית עסק'].isin(settings['excluded_credit']))
@@ -235,6 +250,6 @@ if bank_up and credit_up:
                         st.metric("סכום שנחסך החודש", f"₪{combined_cats['חסכון והשקעות']:,.0f}")
                         total_income_month = summary.loc[sel_month, 'הכנסות'] if sel_month in summary.index else 0
                         if total_income_month > 0:
-                            st.metric("שיעור חסכון", f"{(combined_cats['חסכון והשקעות'] / total_income_month * 100):.1f}%")
+                            st.metric("שיעור חסכון מתוך הכנסות", f"{(combined_cats['חסכון והשקעות'] / total_income_month * 100):.1f}%")
                     
                     st.write(combined_cats.map("₪{:,.0f}".format))
