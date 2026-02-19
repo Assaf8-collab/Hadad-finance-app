@@ -115,12 +115,24 @@ if bank_up and credit_up:
     # --- א. עיבוד בנק ---
     try:
         df_b = pd.read_csv(bank_up, skiprows=7)
-        df_b['תאריך'] = pd.to_datetime(df_b['תאריך'], dayfirst=True, errors='coerce')
-        df_b['סכום'] = df_b['₪ זכות/חובה '].apply(lambda x: clean_and_detect_currency(x)[0])
-        df_b = df_b.dropna(subset=['תאריך']).rename(columns={'תיאור התנועה': 'מקור התנועה'})
         
-        # בעו"ש, חודש התזרים הוא תמיד חודש הפעולה (כי זה מתי שהכסף יצא/נכנס בפועל)
-        df_b['Month'] = df_b['תאריך'].dt.to_period('M')
+        # בחירת תאריך קובע לתזרים: עדיפות ל"יום ערך", גיבוי ל"תאריך"
+        date_col = 'תאריך'
+        if 'יום ערך' in df_b.columns:
+            date_col = 'יום ערך'
+        elif 'תאריך ערך' in df_b.columns:
+            date_col = 'תאריך ערך'
+            
+        df_b['תאריך_קובע'] = pd.to_datetime(df_b[date_col], dayfirst=True, errors='coerce')
+        
+        # השלמת תאריכים חסרים מתוך עמודת התאריך הרגילה
+        if 'תאריך' in df_b.columns and date_col != 'תאריך':
+            df_b['תאריך_קובע'] = df_b['תאריך_קובע'].fillna(pd.to_datetime(df_b['תאריך'], dayfirst=True, errors='coerce'))
+            
+        df_b['סכום'] = df_b['₪ זכות/חובה '].apply(lambda x: clean_and_detect_currency(x)[0])
+        df_b = df_b.dropna(subset=['תאריך_קובע']).rename(columns={'תיאור התנועה': 'מקור התנועה'})
+        
+        df_b['Month'] = df_b['תאריך_קובע'].dt.to_period('M')
         
         credit_keys = ['כ.א.ל', 'מקס', 'ישראכרט', 'חיוב לכרטיס', 'ויזה', 'cal', 'max']
         df_inc_raw = df_b[df_b['סכום'] > 0].copy()
@@ -129,7 +141,7 @@ if bank_up and credit_up:
         st.error(f"שגיאה בעיבוד קובץ העו\"ש. פירוט: {e}")
         st.stop()
 
-    # --- ב. עיבוד אשראי (עם חישוב חודש חיוב והמרת מט"ח) ---
+    # --- ב. עיבוד אשראי ---
     try:
         df_c_raw = pd.read_csv(credit_up, skiprows=8)
         c_processed = []
@@ -139,8 +151,6 @@ if bank_up and credit_up:
             dt = pd.to_datetime(row['תאריך עסקה'], dayfirst=True, errors='coerce')
             
             ils_amt, rate = get_exchange_info(amt, curr, dt)
-            
-            # חישוב החודש לפי תאריך החיוב (10 לחודש)
             billing_month = get_billing_month(dt)
             
             c_processed.append({
@@ -159,13 +169,12 @@ if bank_up and credit_up:
     # --- ג. ממשק מיון וסיווג (שלב 1) ---
     curr_m = pd.Timestamp.now().to_period('M')
     
-    # איחוד חודשים מהבנק ומהאשראי כדי ששום דבר לא ייעלם
     all_months = set(df_b['Month'].dropna().unique()).union(set(df_c['Month'].dropna().unique()))
     available_months = sorted([m for m in all_months if m <= curr_m], reverse=True)
     
     st.divider()
     if available_months:
-        sel_month = st.selectbox("בחר חודש לסיווג תנועות (מבוסס תאריך חיוב לאשראי):", available_months)
+        sel_month = st.selectbox("בחר חודש לסיווג תנועות (מבוסס תאריך ערך וחיוב אשראי):", available_months)
         st.subheader(f"🛠️ שלב 1: אישור וסיווג - {sel_month}")
         
         t1, t2, t3 = st.tabs(["🏦 הכנסות", "📉 הוצאות בנק", "💳 הוצאות אשראי"])
