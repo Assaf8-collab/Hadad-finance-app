@@ -21,7 +21,9 @@ def load_settings():
         "approved_expenses": [], 
         "savings_list": [],
         "credit_categories": {}, 
-        "excluded_credit": []
+        "excluded_credit": [],
+        "hard_income_list": [],    # זיכרון להכנסות קשיחות
+        "hard_expense_list": []    # זיכרון להוצאות קשיחות (בנק ואשראי)
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -37,8 +39,8 @@ def save_settings(settings_dict):
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(settings_dict, f, ensure_ascii=False, indent=4)
 
-# --- 2. מנוע סיווג והמרות ---
-CATEGORIES = ['אחר', 'קניות סופר', 'רכב', 'ביטוח', 'ביגוד', 'אוכל בחוץ', 'בילויים', 'מגורים ואחזקה', 'חסכון והשקעות']
+# --- 2. מנוע סיווג, המרות וחישובי תאריכים ---
+CATEGORIES = ['אחר', 'קניות סופר', 'רכב', 'ביטוח', 'ביגוד', 'אוכל בחוץ', 'בילויים', 'מגורים ואחזקה', 'חסכון והשקעות', 'מסגרות וחינוך']
 
 def clean_and_detect_currency(v):
     if pd.isna(v) or str(v).strip() == '' or str(v) == 'תיאור התנועה': 
@@ -73,7 +75,8 @@ def get_initial_category(desc, settings):
         'ביגוד': ['זארה', 'zara', 'h&m', 'טרמינל', 'terminal', 'פוקס', 'fox', 'קסטרו'],
         'בילויים': ['קולנוע', 'סינמה', 'תיאטרון', 'הופעה', 'זאפה'],
         'ביטוח': ['ביטוח', 'הראל', 'מגדל', 'כלל', 'הפניקס', 'שירביט'],
-        'מגורים ואחזקה': ['ארנונה', 'חשמל', 'ועד בית', 'מי שבע', 'גז', 'מים']
+        'מגורים ואחזקה': ['ארנונה', 'חשמל', 'ועד בית', 'מי שבע', 'גז', 'מים'],
+        'מסגרות וחינוך': ['גן', 'בית ספר', 'צהרון', 'מעון', 'חוג', 'מתנס']
     }
     
     d_low = desc_str.lower()
@@ -106,7 +109,6 @@ if bank_up and credit_up:
     try:
         df_b = pd.read_csv(bank_up, skiprows=7)
         
-        # בחירת תאריך קובע לתזרים: עדיפות ל"יום ערך", גיבוי ל"תאריך"
         date_col = 'תאריך'
         if 'יום ערך' in df_b.columns:
             date_col = 'יום ערך'
@@ -114,7 +116,6 @@ if bank_up and credit_up:
             date_col = 'תאריך ערך'
             
         df_b['תאריך_קובע'] = pd.to_datetime(df_b[date_col], dayfirst=True, errors='coerce')
-        
         if 'תאריך' in df_b.columns and date_col != 'תאריך':
             df_b['תאריך_קובע'] = df_b['תאריך_קובע'].fillna(pd.to_datetime(df_b['תאריך'], dayfirst=True, errors='coerce'))
             
@@ -123,18 +124,16 @@ if bank_up and credit_up:
         
         df_b['Month'] = df_b['תאריך_קובע'].dt.to_period('M')
         
-        # עדכון לוגיקת סינון כרטיסי אשראי מהעו"ש
         detailed_cards = ['1723', '1749', '1097']
         is_detailed_cc = df_b['מקור התנועה'].str.contains('|'.join(detailed_cards), na=False)
         
         df_inc_raw = df_b[df_b['סכום'] > 0].copy()
-        # רק כרטיסים שנמצאים ברשימה מסוננים החוצה. כרטיסים אחרים יישארו בעו"ש כהוצאה רגילה
         df_exp_raw = df_b[(df_b['סכום'] < 0) & (~is_detailed_cc)].copy()
     except Exception as e:
         st.error(f"שגיאה בעיבוד קובץ העו\"ש. פירוט: {e}")
         st.stop()
 
-    # --- ב. עיבוד אשראי (שימוש ישיר בעמודות H ו-I) ---
+    # --- ב. עיבוד אשראי ---
     try:
         df_c_raw = pd.read_csv(credit_up, skiprows=8)
         
@@ -180,11 +179,13 @@ if bank_up and credit_up:
         
         with t1:
             m_inc = df_inc_raw[df_inc_raw['Month'] == sel_month].groupby('מקור התנועה')['סכום'].sum().reset_index()
+            m_inc.insert(0, "הכנסה קשיחה?", m_inc['מקור התנועה'].isin(settings['hard_income_list']))
             m_inc.insert(0, "אישור", m_inc['מקור התנועה'].isin(settings['approved_income']) if settings['approved_income'] else True)
             ed_inc = st.data_editor(m_inc, hide_index=True, key="inc_ed", column_config={"מקור התנועה": st.column_config.TextColumn(width="large")})
             
         with t2:
             m_exp = df_exp_raw[df_exp_raw['Month'] == sel_month].groupby('מקור התנועה')['סכום'].sum().abs().reset_index()
+            m_exp.insert(0, "הוצאה קשיחה?", m_exp['מקור התנועה'].isin(settings['hard_expense_list']))
             m_exp.insert(0, "חסכון?", m_exp['מקור התנועה'].isin(settings['savings_list']))
             m_exp.insert(0, "אישור", m_exp['מקור התנועה'].isin(settings['approved_expenses']) if settings['approved_expenses'] else True)
             ed_exp = st.data_editor(m_exp, hide_index=True, key="exp_ed", column_config={"מקור התנועה": st.column_config.TextColumn(width="large")})
@@ -192,6 +193,7 @@ if bank_up and credit_up:
         with t3:
             m_c = df_c[df_c['Month'] == sel_month].groupby(['בית עסק', 'מטבע_מקור', 'שער'], dropna=False)['סכום'].sum().reset_index()
             m_c['קטגוריה'] = m_c['בית עסק'].apply(lambda x: get_initial_category(x, settings))
+            m_c.insert(0, "הוצאה קשיחה?", m_c['בית עסק'].isin(settings['hard_expense_list']))
             m_c.insert(0, "תזרימי?", ~m_c['בית עסק'].isin(settings['excluded_credit']))
             ed_c = st.data_editor(m_c, hide_index=True, key="c_ed", 
                                   column_config={
@@ -201,10 +203,18 @@ if bank_up and credit_up:
                                   })
 
         if st.button("💾 שמור הגדרות"):
+            # עדכון רשימות אישור וחסכון
             settings['approved_income'] = list((set(settings['approved_income']) - set(m_inc['מקור התנועה'])) | set(ed_inc[ed_inc["אישור"]]['מקור התנועה']))
             settings['approved_expenses'] = list((set(settings['approved_expenses']) - set(m_exp['מקור התנועה'])) | set(ed_exp[ed_exp["אישור"]]['מקור התנועה']))
             settings['savings_list'] = list((set(settings['savings_list']) - set(m_exp['מקור התנועה'])) | set(ed_exp[ed_exp["חסכון?"]]['מקור התנועה']))
             
+            # עדכון רשימות הוצאות/הכנסות קשיחות
+            settings['hard_income_list'] = list((set(settings['hard_income_list']) - set(m_inc['מקור התנועה'])) | set(ed_inc[ed_inc["הכנסה קשיחה?"]]['מקור התנועה']))
+            all_displayed_exp = set(m_exp['מקור התנועה']) | set(m_c['בית עסק'])
+            curr_hard_exp = set(ed_exp[ed_exp["הוצאה קשיחה?"]]['מקור התנועה']) | set(ed_c[ed_c["הוצאה קשיחה?"]]['בית עסק'])
+            settings['hard_expense_list'] = list((set(settings['hard_expense_list']) - all_displayed_exp) | curr_hard_exp)
+            
+            # עדכון קטגוריות אשראי
             for _, row in ed_c.iterrows():
                 settings['credit_categories'][row['בית עסק']] = row['קטגוריה']
                 if not row['תזרימי?']: 
@@ -241,8 +251,24 @@ if bank_up and credit_up:
             st.table(summary_past.sort_index(ascending=False).style.format("₪{:,.0f}"))
 
             if available_months:
-                st.subheader(f"🔍 שלב 3: התפלגות הוצאות - {sel_month}")
+                st.subheader(f"🔍 שלב 3: התפלגות הוצאות ותקציב בסיס - {sel_month}")
                 
+                # --- חישוב תקציב קשיח (בסיס) ---
+                st.markdown("##### 📌 תקציב קשיח (בסיס)")
+                
+                hard_inc_sum = f_inc[(f_inc['Month'] == sel_month) & (f_inc['מקור התנועה'].isin(settings['hard_income_list']))]['סכום'].sum()
+                hard_bank_sum = f_bank_exp[(f_bank_exp['Month'] == sel_month) & (f_bank_exp['מקור התנועה'].isin(settings['hard_expense_list']))]['סכום'].sum()
+                hard_credit_sum = f_credit[(f_credit['Month'] == sel_month) & (f_credit['בית עסק'].isin(settings['hard_expense_list']))]['סכום'].sum()
+                total_hard_exp = hard_bank_sum + hard_credit_sum
+                
+                c_hard1, c_hard2, c_hard3 = st.columns(3)
+                c_hard1.metric("הכנסות קשיחות (משכורת וכו')", f"₪{hard_inc_sum:,.0f}")
+                c_hard2.metric("הוצאות קשיחות (חובה)", f"₪{total_hard_exp:,.0f}")
+                c_hard3.metric("הכנסה פנויה (אחרי חובה)", f"₪{hard_inc_sum - total_hard_exp:,.0f}")
+                
+                st.markdown("---")
+                
+                # --- גרף חלוקה לקטגוריות ---
                 c_cat = f_credit[f_credit['Month'] == sel_month][['קטגוריה', 'סכום']]
                 b_cat = f_bank_exp[f_bank_exp['Month'] == sel_month].copy()
                 b_cat['קטגוריה'] = b_cat['מקור התנועה'].apply(lambda y: 'חסכון והשקעות' if y in settings['savings_list'] else 'אחר')
@@ -258,6 +284,6 @@ if bank_up and credit_up:
                         st.metric("סכום שנחסך החודש", f"₪{combined_cats['חסכון והשקעות']:,.0f}")
                         total_income_month = summary.loc[sel_month, 'הכנסות'] if sel_month in summary.index else 0
                         if total_income_month > 0:
-                            st.metric("שיעור חסכון מתוך הכנסות", f"{(combined_cats['חסכון והשקעות'] / total_income_month * 100):.1f}%")
+                            st.metric("שיעור חסכון מתוך כלל ההכנסות", f"{(combined_cats['חסכון והשקעות'] / total_income_month * 100):.1f}%")
                     
                     st.write(combined_cats.map("₪{:,.0f}".format))
