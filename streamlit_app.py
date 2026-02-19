@@ -37,18 +37,8 @@ def save_settings(settings_dict):
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(settings_dict, f, ensure_ascii=False, indent=4)
 
-# --- 2. מנוע סיווג, המרות וחישובי תאריכים ---
+# --- 2. מנוע סיווג, והמרות ---
 CATEGORIES = ['אחר', 'קניות סופר', 'רכב', 'ביטוח', 'ביגוד', 'אוכל בחוץ', 'בילויים', 'מגורים ואחזקה', 'חסכון והשקעות']
-
-def get_billing_month(date):
-    """
-    מחשב את חודש החיוב התזרימי של כרטיס האשראי.
-    תנועות מה-10 לחודש ומעלה נדחפות לתזרים של החודש הבא.
-    """
-    if pd.isna(date): return None
-    if date.day >= 10:
-        return (date + pd.DateOffset(months=1)).to_period('M')
-    return date.to_period('M')
 
 def clean_and_detect_currency(v):
     if pd.isna(v) or str(v).strip() == '' or str(v) == 'תיאור התנועה': 
@@ -125,7 +115,7 @@ if bank_up and credit_up:
             
         df_b['תאריך_קובע'] = pd.to_datetime(df_b[date_col], dayfirst=True, errors='coerce')
         
-        # השלמת תאריכים חסרים מתוך עמודת התאריך הרגילה
+        # השלמת תאריכים חסרים
         if 'תאריך' in df_b.columns and date_col != 'תאריך':
             df_b['תאריך_קובע'] = df_b['תאריך_קובע'].fillna(pd.to_datetime(df_b['תאריך'], dayfirst=True, errors='coerce'))
             
@@ -141,29 +131,39 @@ if bank_up and credit_up:
         st.error(f"שגיאה בעיבוד קובץ העו\"ש. פירוט: {e}")
         st.stop()
 
-    # --- ב. עיבוד אשראי ---
+    # --- ב. עיבוד אשראי (שימוש ישיר בעמודות H ו-I) ---
     try:
         df_c_raw = pd.read_csv(credit_up, skiprows=8)
+        
+        # זיהוי חכם של עמודות H (תאריך החיוב) ו-I (סכום החיוב) לפי שם או אינדקס
+        col_h = 'תאריך החיוב' if 'תאריך החיוב' in df_c_raw.columns else ('תאריך חיוב' if 'תאריך חיוב' in df_c_raw.columns else df_c_raw.columns[7])
+        col_i = 'סכום החיוב' if 'סכום החיוב' in df_c_raw.columns else ('סכום חיוב' if 'סכום חיוב' in df_c_raw.columns else df_c_raw.columns[8])
+        
         c_processed = []
         for _, row in df_c_raw.iterrows():
-            val = row.get('סכום מקורי', row.get('סכום חיוב', row.get('סכום החיוב', 0)))
+            val = row[col_i]
             amt, curr = clean_and_detect_currency(val)
-            dt = pd.to_datetime(row['תאריך עסקה'], dayfirst=True, errors='coerce')
             
-            ils_amt, rate = get_exchange_info(amt, curr, dt)
-            billing_month = get_billing_month(dt)
+            # לוקחים תאריך עסקה רק לצורך המרת מט"ח היסטורית
+            tx_date = pd.to_datetime(row.get('תאריך עסקה', row[col_h]), dayfirst=True, errors='coerce')
+            ils_amt, rate = get_exchange_info(amt, curr, tx_date)
+            
+            # החודש התזרימי נקבע נטו לפי עמודה H (תאריך החיוב הרשמי)
+            bill_date = pd.to_datetime(row[col_h], dayfirst=True, errors='coerce')
             
             c_processed.append({
-                'תאריך עסקה': dt, 
+                'תאריך חיוב': bill_date, 
                 'בית עסק': row.get('בית עסק', 'לא ידוע'), 
                 'סכום': ils_amt, 
                 'מטבע_מקור': curr, 
                 'שער': rate,
-                'Month': billing_month
+                'Month': bill_date.to_period('M') if not pd.isna(bill_date) else None
             })
-        df_c = pd.DataFrame(c_processed).dropna(subset=['תאריך עסקה'])
+        
+        # זורקים לפח רק שורות שאין להן חודש חיוב מוגדר (כמו שורות סיכום ריקות בסוף הקובץ)
+        df_c = pd.DataFrame(c_processed).dropna(subset=['Month'])
     except Exception as e:
-        st.error(f"שגיאה בעיבוד קובץ האשראי. פירוט: {e}")
+        st.error(f"שגיאה בעיבוד קובץ האשראי. ודא שהקובץ תקין וקיימות עמודות תאריך וסכום חיוב. פירוט: {e}")
         st.stop()
 
     # --- ג. ממשק מיון וסיווג (שלב 1) ---
@@ -174,7 +174,7 @@ if bank_up and credit_up:
     
     st.divider()
     if available_months:
-        sel_month = st.selectbox("בחר חודש לסיווג תנועות (מבוסס תאריך ערך וחיוב אשראי):", available_months)
+        sel_month = st.selectbox("בחר חודש לסיווג תנועות:", available_months)
         st.subheader(f"🛠️ שלב 1: אישור וסיווג - {sel_month}")
         
         t1, t2, t3 = st.tabs(["🏦 הכנסות", "📉 הוצאות בנק", "💳 הוצאות אשראי"])
