@@ -129,6 +129,10 @@ if bank_up and credit_up:
         
         df_inc_raw = df_b[df_b['סכום'] > 0].copy()
         df_exp_raw = df_b[(df_b['סכום'] < 0) & (~is_detailed_cc)].copy()
+        
+        # תיקון קריטי: הפיכת כל הוצאות הבנק למספרים חיוביים (ערך מוחלט) מהרגע הראשון
+        df_exp_raw['סכום'] = df_exp_raw['סכום'].abs()
+        
     except Exception as e:
         st.error(f"שגיאה בעיבוד קובץ העו\"ש. פירוט: {e}")
         st.stop()
@@ -144,6 +148,9 @@ if bank_up and credit_up:
         for _, row in df_c_raw.iterrows():
             val = row[col_i]
             amt, curr = clean_and_detect_currency(val)
+            
+            # וידוא שגם סכומי האשראי הם בערך מוחלט חיובי (למקרה של זיכויים מבלבלים בקובץ)
+            amt = abs(amt)
             
             tx_date = pd.to_datetime(row.get('תאריך עסקה', row[col_h]), dayfirst=True, errors='coerce')
             ils_amt, rate = get_exchange_info(amt, curr, tx_date)
@@ -184,7 +191,7 @@ if bank_up and credit_up:
             ed_inc = st.data_editor(m_inc, hide_index=True, key="inc_ed", column_config={"מקור התנועה": st.column_config.TextColumn(width="large")})
             
         with t2:
-            m_exp = df_exp_raw[df_exp_raw['Month'] == sel_month].groupby('מקור התנועה')['סכום'].sum().abs().reset_index()
+            m_exp = df_exp_raw[df_exp_raw['Month'] == sel_month].groupby('מקור התנועה')['סכום'].sum().reset_index()
             m_exp.insert(0, "הוצאה קשיחה?", m_exp['מקור התנועה'].isin(settings['hard_expense_list']))
             m_exp.insert(0, "חסכון?", m_exp['מקור התנועה'].isin(settings['savings_list']))
             m_exp.insert(0, "אישור", m_exp['מקור התנועה'].isin(settings['approved_expenses']) if settings['approved_expenses'] else True)
@@ -237,7 +244,7 @@ if bank_up and credit_up:
 
         summary = pd.DataFrame({
             'הכנסות': f_inc.groupby('Month')['סכום'].sum(),
-            'הוצאות בנק (ללא 1723,1749,1097)': f_bank_exp.groupby('Month')['סכום'].sum().abs(),
+            'הוצאות בנק (ללא 1723,1749,1097)': f_bank_exp.groupby('Month')['סכום'].sum(),
             'הוצאות אשראי (מפורטות)': f_credit.groupby('Month')['סכום'].sum()
         }).fillna(0)
         
@@ -259,6 +266,7 @@ if bank_up and credit_up:
                 hard_inc_sum = f_inc[(f_inc['Month'] == sel_month) & (f_inc['מקור התנועה'].isin(settings['hard_income_list']))]['סכום'].sum()
                 hard_bank_sum = f_bank_exp[(f_bank_exp['Month'] == sel_month) & (f_bank_exp['מקור התנועה'].isin(settings['hard_expense_list']))]['סכום'].sum()
                 hard_credit_sum = f_credit[(f_credit['Month'] == sel_month) & (f_credit['בית עסק'].isin(settings['hard_expense_list']))]['סכום'].sum()
+                
                 total_hard_exp = hard_bank_sum + hard_credit_sum
                 
                 c_hard1, c_hard2, c_hard3 = st.columns(3)
